@@ -1,8 +1,16 @@
 from socket import *
 import signal
 import time
-import logging
+# import logging
 
+'''
+Project 1 - Simple Python HTTP Server
+Computer Networks
+COSC3344.01
+26 February 2014
+
+Hunter Skrasek, Molly Thurin, Adela Arreola
+'''
 class Server:
 
 	def __init__(self, port = 12618):
@@ -62,70 +70,122 @@ class Server:
 	def listenForConnections(self):
 		while True:
 			print("Waiting on a connection...")
-			self.socket.listen(1) # One connection... for now.
+			self.socket.listen(3) # One connection... for now.
 			conn, addr = self.socket.accept()
 
 			print("Connection established. Connecting host: ", addr)
 			data = conn.recv(2048)
 			decodedData = bytes.decode(data)
-			print("Decoded Data Length:", len(decodedData.split()))
+
 			if (len(decodedData.split()) == 0):
 				conn.send(self._generateHeaders(400).encode())
 				continue
 
-			httpVersion = decodedData.split(' ')[2].split('\r\n')[0].split('/')
-			if (httpVersion[1] == '1.0'):
+			request = Request(original = decodedData)
+			request.parseRequestHeaders()
+
+			if not request.isAValidRequest():
+				print("Invalid Request")
+				conn.send(self._generateHeaders(400).encode())
+			elif not request.isProperVersion():
+				print("Invalid HTTP Version")
 				conn.send(self._generateHeaders(505).encode())
-				continue
-
-			requestMethod = decodedData.split(' ')[0]
-			print("Method: ", requestMethod)
-			print("Request Body: ", decodedData.split(' '))
-			endOfRequest = decodedData.split(' ')[-1].split('\r\n')
-			# if (len(endOfRequest) < 3 )
-			# print("Last Request Body Item:", decodedData.split(' ')[-1].split('\r\n'))
-
-			if (requestMethod == 'GET') | (requestMethod == 'HEAD'):
-				requestedFile = decodedData.split(' ')[1]
-
-				if (requestedFile == '/'):
-					requestedFile = '/index.html'
-				requestedFile = self.baseDir + requestedFile
-
-				print("Serving: ", requestedFile)
-
-				if (requestedFile == './teapot'):
-					print("Sending I'm a Teapot")
-					conn.send(self._generateHeaders(418).encode())
-					continue
-
+			elif request.isUnknownMethod():
+				print("Unknown Method:", request.getRequestMethod())
+				conn.send(self._generateHeaders(405).encode())
+			elif request.isTeapot():
+				print("Sending I'm a Teapot")
+				conn.send(self._generateHeaders(418).encode())
+			else:
+				print("Method: ", request.getRequestMethod())
+				print("Request Body: ", decodedData.split('\r\n'))
 				try:
-					fileHander = open(requestedFile, 'rb')
-					if (requestMethod == 'GET'):
+					fileHander = open(self.baseDir + request.getRequestedFile(), 'rb')
+					if (request.getRequestMethod() == 'GET'):
 						responseBody = fileHander.read()
 					fileHander.close()
-
 					responseHeaders = self._generateHeaders(200)
 				except Exception as e:
 					print("File not found, responing with 404. Error: ", e)
-					if (requestMethod == 'GET'):
-						responseBody = b"<html><body><p>Error 404: File not found</p><p>Python HTTP server</p></body></html>"
+					if (request.getRequestMethod() == 'GET'):
+						responseBody = b"<html><body><h1>Error 404: File not found</h1><p>Python HTTP server</p></body></html>"
 					responseHeaders = self._generateHeaders(404)
 
 				fullResponse = responseHeaders.encode()
-				if (requestMethod == 'GET'):
+				if (request.getRequestMethod() == 'GET'):
 					fullResponse += "Content-Length: {0}\r\n".format(len(responseBody)).encode()
 					import mimetypes
-					mimeType = mimetypes.guess_type(requestedFile)
+					mimeType = mimetypes.guess_type(self.baseDir + request.getRequestedFile())
 					fullResponse += "Content-Type: {0}\r\n".format(mimeType[0]).encode()
 					fullResponse += b"\n" + responseBody
 
 				conn.send(fullResponse)
-			else:
-				print("Unknown Method: ", requestMethod)
-				conn.send(self._generateHeaders(405).encode())
+				
 			print("Closing connection with client.")
 			conn.close()
+
+class Request:
+	
+	def __init__(self, original):
+		self.original = original
+		self.headers = dict()
+		self.headers['eof'] = 0
+
+	# Split on \r\n first, then iterate through each item and attempt to split on : if the item isnt an empty string.
+	# For each subsequent split, [0] => Key, [1] => Value of the Request Headers.
+	# Could possibly assume that the first item would always be the Request Method, Request File, and Version.
+	def parseRequestHeaders(self):
+		carriageSplit = self.original.split('\r\n')
+		for line in carriageSplit:
+			# print("Parsing:", line)
+			if line == '':
+				self.headers['eof'] += 1
+			elif len(line.split(':')) > 1:
+				parts = line.split(':')
+				if parts[0] == 'Host':
+					if len(parts) == 3:
+						self.headers[parts[0]] = parts[1] + ":" + parts[2]
+					else:
+						self.headers[parts[0]] = parts[1]
+				else:
+					self.headers[parts[0]] = parts[1]
+			else:
+				requestFile = line.split(' ')
+				self.method = requestFile[0]
+				if requestFile[1] == '/':
+					self.requestedFile = '/index.html'	
+				else:
+					self.requestedFile = requestFile[1]
+				print("Version:", requestFile[2])
+				self.version = requestFile[2].split('/')
+		
+	def isAValidRequest(self):
+		if 'Host' not in self.headers:
+			return False
+		if not self.headers['eof'] or self.headers['eof'] != 2:
+			return False
+		if not self.method:
+			return False
+		if not self.requestedFile:
+			return False
+		if not self.version:
+			return False
+		return True
+		
+	def isProperVersion(self):
+		return self.version[1] == '1.1'
+
+	def getRequestedFile(self):
+		return self.requestedFile
+
+	def getRequestMethod(self):
+		return self.method
+
+	def isUnknownMethod(self):
+		return not (self.method == 'GET') and not (self.method == 'HEAD')
+	
+	def isTeapot(self):
+		return (self.requestedFile.lower() == 'teapot')
 
 def gracefulShutdown(sig, dumb):
 	server.shutdown()
